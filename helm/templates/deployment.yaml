@@ -1,0 +1,180 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: fluentd
+  namespace: logging
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: fluentd
+  namespace: logging
+rules:
+  - apiGroups:
+    - ""
+    resources:
+      - namespaces
+      - pods
+    verbs:
+      - get
+      - list
+      - watch
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: fluentd
+  namespace: logging
+roleRef:
+  kind: ClusterRole
+  name: fluentd
+  apiGroup: rbac.authorization.k8s.io
+subjects:
+  - kind: ServiceAccount
+    name: fluentd
+    namespace: logging
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: config-env
+  namespace: logging
+data:
+  EXCLUDE_PATH: "/var/log/containers/fluentd*.log,/var/log/containers/prometheus-*.log,/var/log/containers/coredns-*.log,/var/log/containers/aws-node-*.log,/var/log/containers/kube-proxy-*.log,/var/log/containers/eks-auth-*.log,/var/log/containers/argocd-*.log,/var/log/containers/cluster-autoscaler-*.log,/var/log/containers/alertmanager-*.log,/var/log/containers/metric-server-*.log"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: config
+  namespace: logging
+data:
+  fluent.conf: |
+    <system>
+      log_level info
+    </system>
+
+    <match healthcheck>
+      @type null
+    </match>
+
+    <source>
+      # https://docs.fluentd.org/input/tail
+      @type tail
+      path "/var/log/containers/*.log"
+      pos_file "/fluentd/buffers/fluentd.pos"
+      enable_stat_watcher false
+      tag kubernetes.*
+      exclude_path "#{ENV['EXCLUDE_PATH'].split(',')}"
+      <parse>
+        @type json
+        json_parser json
+        keep_time_key true
+        time_format %Y-%m-%dT%H:%M:%S.%N%Z
+      </parse>
+    </source>
+    
+    <filter kubernetes.**>
+      # https://github.com/fabric8io/fluent-plugin-kubernetes_metadata_filter
+      @type kubernetes_metadata
+      annotation_match [".*"]
+      de_dot false
+      watch false
+      bearer_token_file /var/run/secrets/kubernetes.io/serviceaccount/token
+      ca_file /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+    </filter>
+    
+    <filter kubernetes.**>
+      # https://docs.fluentd.org/filter/record_transformer
+      @type record_transformer
+      remove_keys [
+        "stream",
+        "$.kubernetes.master_url",
+        "$.kubernetes.container_image_id",
+        "$.kubernetes.pod_id",
+        "$.kubernetes.labels.pod-template-hash",
+        "$.kubernetes.namespace_id",
+        "$.kubernetes.annotations",
+        "$.kubernetes.namespace_annotations",
+        "$.kubernetes.namespace_labels",
+        "$.kubernetes.labels",
+        "$.docker",
+        "$.time"
+      ]
+    </filter>
+    
+    <match kubernetes.**>
+      @type logtail
+      @id output_logtail
+      source_token "#{ENV['LOGTAIL_TOKEN']}"
+      flush_interval 2
+    </match>
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: fluentd
+  namespace: logging
+spec:
+  selector:
+    matchLabels:
+      component: fluentd
+      context: logging
+  template:
+    metadata:
+      labels:
+        component: fluentd
+        context: logging
+    spec:
+      serviceAccountName: fluentd
+      containers:
+        - name: fluentd
+          image: ghcr.io/ipfs-elastic-provider/fluentd-containers:{{ .Values.image.version }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: healthcheckport
+              containerPort: 9880
+              protocol: TCP
+          env:
+            - name: K8S_NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            - name: LOGTAIL_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: fluentd
+                  key: logtailtoken
+          envFrom:
+            - configMapRef:
+                name: config-env
+          resources:
+            requests:
+              cpu: 100m
+              memory: 300Mi
+            limits:
+              memory: 300Mi
+          volumeMounts:
+            - name: fluentdetc
+              mountPath: /fluentd/etc
+            - name: fluentbuffers
+              mountPath: /fluentd/buffers
+            - name: varlibdocker
+              mountPath: /var/lib/docker
+              readOnly: true
+            - name: varlog
+              mountPath: /var/log
+      volumes:
+        - name: fluentdetc
+          configMap:
+            name: config
+        - name: fluentbuffers
+          emptyDir:
+            sizeLimit: 5Gi
+        - name: varlibdocker
+          hostPath:
+            path: /var/lib/docker
+            type: ""
+        - name: varlog
+          hostPath:
+            path: /var/log
+            type: ""

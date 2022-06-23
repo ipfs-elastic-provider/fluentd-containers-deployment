@@ -1,0 +1,4 @@
+namespace: logging
+image:
+  version: "main"
+  pullPolicy: Always

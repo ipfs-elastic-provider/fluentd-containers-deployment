@@ -1,1 +1,1 @@
-# fluentd-containers-deployment
+Fluentd deployment to export logs, from pods running on kubernetes cluster to logtail
