@@ -128,7 +128,7 @@ spec:
       serviceAccountName: fluentd
       containers:
         - name: fluentd
-          image: ghcr.io/ipfs-elastic-provider/fluentd-containers:{{ .Values.image.version }}
+          image: ghcr.io/elastic-ipfs/fluentd-containers:{{ .Values.image.version }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           ports:
             - name: healthcheckport
